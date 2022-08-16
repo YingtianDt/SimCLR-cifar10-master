@@ -22,11 +22,11 @@ from math import sin, pi
 
 def visualize(loader, path, num=10, size=8):
     for ix, (sample1, sample2) in enumerate(loader):
-        b, c, h, w = sample1.size()
+        b, c, h, w = sample1["image"].size()
         if b < 64:
             raise ValueError("batch size < 64 cannot generate gallery for train data!!!")
-        xi = sample1.numpy()[:64].transpose(0, 2, c, 1).reshape(size, size, h, w, c)
-        xj = sample2.numpy()[:64].transpose(0, 2, c, 1).reshape(size, size, h, w, c)
+        xi = sample1["image"].numpy()[:64].transpose(0, 2, c, 1).reshape(size, size, h, w, c)
+        xj = sample2["image"].numpy()[:64].transpose(0, 2, c, 1).reshape(size, size, h, w, c)
         xi = np.swapaxes(xi, 1, 2).reshape(size * h, size * w, c)
         xj = np.swapaxes(xj, 1, 2).reshape(size * h, size * w, c)
         xi = (xi * 255).astype(np.uint8)

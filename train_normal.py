@@ -13,6 +13,8 @@ from small_models import SmallResnet
 from criterions import NTXEntLoss
 from helper import visualize, adjust_lr, adjust_linear_lr, LARC
 
+from sklearn.linear_model import LogisticRegression
+
 
 def Train_CNN():
     model.train()
@@ -34,64 +36,50 @@ def Train_CNN():
             opt_cnn.zero_grad()
         if ((ix + 1) % (5 * accum)) == 0:
             print("L-train loss:{}".format(train_loss * accum / (ix + 1)))
-        if ix == 99: break  # TODO: fast training
 
     record_cnn["train_loss"].append(train_loss * accum / (ix + 1))
 
 
-def Train_CLF():
+def Eval_CLF():
     model.eval()
-    linear_clf.train()
-    train_loss = 0.0
-    correct = 0
-    total = 0
-    for ix, (sample1, sample2) in enumerate(Linear_trainloader):
-        opt_clf.zero_grad()
-        data, label = sample1["image"], sample1["label"]
-        data, label = data.to(device), label.to(device)
-        feature = model(data)
-        output = linear_clf(feature.detach())
-        loss = criterion2(output, label)
-        loss.backward()
-        opt_clf.step()
-        train_loss += loss.item()
-        _, predict = output.max(1)
-        total += label.size(0)
-        correct += predict.eq(label).sum().item()
-        if (ix + 1) % 100 == 0:
-            print("L-train loss:{} / L-acc:{}".format(train_loss / (ix + 1),
-                                                      100 * correct / total))
-        if ix == 99: break  # TODO: fast training
-        
-    record_clf["train_loss"].append(train_loss / (ix + 1))
-    record_clf["train_acc"].append(100 * correct / total)
+    feat_ = []
+    label_ = []
+    with torch.no_grad():
+        for ix, (sample1, sample2) in enumerate(Linear_trainloader):
+            data, label = sample1["image"], sample1["label"]
+            data, label = data.to(device), label.to(device)
+            feature = model(data).cpu()
+            label = label.cpu()
 
+            feat_.append(feature)
+            label_.append(label)
 
-def Test_CLF():
-    model.eval()
-    linear_clf.eval()
-    total = 0
-    correct = 0
-    test_loss = 0.0
-    global best_acc
+    feat_ = torch.cat(feat_).numpy()
+    label_ = torch.cat(label_).numpy()
+
+    clf = LogisticRegression(random_state=0).fit(feat_, label_)
+
+    feat_ = []
+    label_ = []
     with torch.no_grad():
         for ix, (sample1, sample2) in enumerate(Linear_testloader):
             data, label = sample1["image"], sample1["label"]
             data, label = data.to(device), label.to(device)
-            feature = model(data)
-            output = linear_clf(feature.detach())
-            loss = criterion2(output, label)
-            test_loss += loss.item()
-            _, predict = output.max(1)
-            total += label.size(0)
-            correct += predict.eq(label).sum().item()
-            if ix == 99: break  # TODO: fast training
+            feature = model(data).cpu()
+            label = label.cpu()
 
-        print("L-test loss:{} / L-acc:{}".format(test_loss / (ix + 1),
-                                                 100 * correct / total))
-        record_clf["test_loss"].append(test_loss / (ix + 1))
-        record_clf["test_acc"].append(100 * correct / total)
-    return 100 * correct / total
+            feat_.append(feature)
+            label_.append(label)
+
+    feat_ = torch.cat(feat_).numpy()
+    label_ = torch.cat(label_).numpy()
+
+    test_acc = clf.score(feat_, label_)
+
+    print("Test Accuracy:", test_acc)
+        
+    record_clf["test_acc"].append(test_acc)
+    return clf, test_acc
 
 
 def record_saver(record, path):
@@ -127,6 +115,7 @@ if __name__ == "__main__":
     project_out = args.pro_out
     linear_in = args.linear_in
     eval_routine = args.eval_routine
+    subset_interval = args.subset_interval
     record_cnn = {"train_loss": []}
     record_clf = {"train_loss": [],
                   "train_acc": [],
@@ -151,7 +140,7 @@ if __name__ == "__main__":
         download=True
     )
 
-    trainset = ImageDataset(traindata, transform=train_aug)
+    trainset = ImageDataset(traindata, transform=train_aug, subset_interval=subset_interval)
 
     trainloader = DataLoader(
         trainset,
@@ -173,7 +162,7 @@ if __name__ == "__main__":
         download=True
     )
 
-    Linear_trainset = ImageDataset(Linear_traindata, transform=Linear_train_aug)
+    Linear_trainset = ImageDataset(Linear_traindata, transform=Linear_train_aug, subset_interval=subset_interval)
 
     Linear_trainloader = DataLoader(
         Linear_trainset,
@@ -192,7 +181,7 @@ if __name__ == "__main__":
         download=True, 
     )
 
-    Linear_testset = ImageDataset(Linear_testdata, transform=Linear_test_aug)
+    Linear_testset = ImageDataset(Linear_testdata, transform=Linear_test_aug, subset_interval=subset_interval)
 
     Linear_testloader = DataLoader(
         Linear_testset,
@@ -236,25 +225,12 @@ if __name__ == "__main__":
         Train_CNN()
         record_saver(record_cnn, dir_log + '/' + "cnn.txt")
         if (i % eval_routine) == 0:
-            linear_clf = Linear_Classifier(input_size=linear_in, classNum=classNum)
-            linear_clf.to(device)
-            opt_clf = optim.SGD(linear_clf.parameters(),
-                                lr=clf_lr,
-                                momentum=momentnum,
-                                )
-            if useLARS:
-                opt_clf = LARC(opt_clf)
-            for j in range(1, clf_epoch + 1):
-                print("========== [Supervised Training] ==========")
-                print("[epoch {}/{}]".format(j, clf_epoch))
-                print("[lr {}]".format(adjust_linear_lr(opt=opt_clf, epoch=j, lr_init=clf_lr, T=clf_epoch)))
-                Train_CLF()
-                print("========== [Supervised Testing] ==========")
-                test_acc = Test_CLF()
-                print("save the last model: {} || best model: {}".format(test_acc, best_acc))
-                torch.save({"cnn": model.state_dict(), "clf": linear_clf.state_dict(), "epoch": j}, dir_ckpt + '/' + "last.pt")
-                record_saver(record_clf, dir_log + '/' + "clf.txt")
-                if test_acc > best_acc:
-                    best_acc = test_acc
-                    print("save the best model: {}".format(best_acc))
-                    torch.save({"cnn": model.state_dict(), "clf": linear_clf.state_dict(), "epoch": j}, dir_ckpt + '/' + "best.pt")
+            linear_clf, test_acc = Eval_CLF()
+
+            print("save the last model: {} || best model: {}".format(test_acc, best_acc))
+            torch.save({"cnn": model.state_dict(), "clf": linear_clf, "epoch": i}, dir_ckpt + '/' + "last.pt")
+            record_saver(record_clf, dir_log + '/' + "clf.txt")
+            if test_acc > best_acc:
+                best_acc = test_acc
+                print("save the best model: {}".format(best_acc))
+                torch.save({"cnn": model.state_dict(), "clf": linear_clf, "epoch": i}, dir_ckpt + '/' + "best.pt")
